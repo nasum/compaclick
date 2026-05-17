@@ -1,0 +1,89 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: Run tests
+        run: go test -v ./...
+
+  release:
+    needs: [lint, test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+
+      - name: Get AppVersion
+        id: get_version
+        shell: bash
+        run: |
+          VERSION=$(grep "^AppVersion=" installer.iss | cut -d'=' -f2 | tr -d '\r')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if Release exists
+        id: check_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "v${{ steps.get_version.outputs.version }}" > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Go Program
+        if: steps.check_release.outputs.exists == 'false'
+        run: go build -ldflags="-H windowsgui" -o CompaClick.exe
+
+      - name: Build Installer
+        if: steps.check_release.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Create Release
+        if: steps.check_release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release create "v${{ steps.get_version.outputs.version }}" \
+            ./output/CompaClick_Setup.exe \
+            --title "Release v${{ steps.get_version.outputs.version }}" \
+            --generate-notes
